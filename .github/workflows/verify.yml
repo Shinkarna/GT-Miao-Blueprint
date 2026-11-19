@@ -86,7 +86,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch "$CORE_TAG" https://github.com/MIAOKATZE/MIAOKATZE-Core.git "$RUNNER_TEMP/MIAOKATZE-Core"
           cd "$RUNNER_TEMP/MIAOKATZE-Core"
-          ./gradlew publishToMavenLocal --stacktrace --console=plain
+          bash ./gradlew publishToMavenLocal --stacktrace --console=plain
 
       - name: Build and run verification checks
         # 'build' covers compilation, JUnit, the hand-written JavaExec regressions,
@@ -94,7 +94,7 @@ jobs:
         # The Core repository is redirected to the local Maven repo prepared above.
         run: >-
           xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24"
-          ./gradlew build --build-cache --stacktrace --console=plain
+          bash ./gradlew build --build-cache --stacktrace --console=plain
           -PmiaokatzeCoreRepository="file://$HOME/.m2/repository/"
 
       - name: Upload built jars
