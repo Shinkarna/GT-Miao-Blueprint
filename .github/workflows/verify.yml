@@ -12,6 +12,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Keep in sync with the default miaokatzeCoreVersion in dependencies.gradle.
+  # The public Maven branch of MIAOKATZE-Core does not publish this version,
+  # so the workflow builds it from the matching tag into the local Maven repo.
+  CORE_TAG: v0.2.20
+
 jobs:
   verify:
     name: Build and run checks
@@ -25,7 +31,14 @@ jobs:
           # The build derives its version from git tags and records the source commit.
           fetch-depth: 0
 
-      # The Java toolchain is pinned to 17 (--release 8 via Jabel); Checkstyle runs on 25.
+      # Java 8 compiles MIAOKATZE-Core (modern syntax disabled), 17 is the mod toolchain
+      # (Jabel, --release 8) and Checkstyle runs on 25.
+      - name: Set up JDK 8 (MIAOKATZE-Core toolchain)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '8'
+
       - name: Set up JDK 17 toolchain
         uses: actions/setup-java@v5
         with:
@@ -43,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           paths=()
-          for version in 17 25; do
+          for version in 8 17 25; do
             var="JAVA_HOME_${version}_X64"
             path="${!var:-}"
             if [ -n "$path" ]; then
@@ -68,10 +81,21 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y xvfb mesa-utils x11-xserver-utils
 
+      - name: Publish MIAOKATZE-Core to the local Maven repository
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$CORE_TAG" https://github.com/MIAOKATZE/MIAOKATZE-Core.git "$RUNNER_TEMP/MIAOKATZE-Core"
+          cd "$RUNNER_TEMP/MIAOKATZE-Core"
+          ./gradlew publishToMavenLocal --stacktrace --console=plain
+
       - name: Build and run verification checks
-        # `build` covers compilation, JUnit, the hand-written JavaExec regressions,
+        # 'build' covers compilation, JUnit, the hand-written JavaExec regressions,
         # the license bundle check, tests and reobfuscated-ABI checks.
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" ./gradlew build --build-cache --stacktrace --console=plain
+        # The Core repository is redirected to the local Maven repo prepared above.
+        run: >-
+          xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24"
+          ./gradlew build --build-cache --stacktrace --console=plain
+          -PmiaokatzeCoreRepository="file://$HOME/.m2/repository/"
 
       - name: Upload built jars
         if: success()
