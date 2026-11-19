@@ -1,0 +1,141 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with the default miaokatzeCoreVersion in dependencies.gradle.
+  # The public Maven branch of MIAOKATZE-Core does not publish this version,
+  # so the workflow builds it from the matching tag into the local Maven repo.
+  CORE_TAG: v0.2.20
+
+jobs:
+  verify:
+    name: Build and run checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          # The build derives its version from git tags and records the source commit.
+          fetch-depth: 0
+
+      # Java 8 compiles MIAOKATZE-Core (modern syntax disabled), 17 is the mod toolchain
+      # (Jabel, --release 8) and Checkstyle runs on 25.
+      - name: Set up JDK 8 (MIAOKATZE-Core toolchain)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Set up JDK 17 toolchain
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up JDK 25 (Gradle runtime)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Register installed JDKs for Gradle toolchain detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          paths=()
+          for version in 8 17 25; do
+            var="JAVA_HOME_${version}_X64"
+            path="${!var:-}"
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done
+          if [ "${#paths[@]}" -gt 0 ]; then
+            joined=$(IFS=,; echo "${paths[*]}")
+            mkdir -p "$HOME/.gradle"
+            echo "org.gradle.java.installations.paths=$joined" >> "$HOME/.gradle/gradle.properties"
+            echo "Registered toolchains: $joined"
+          fi
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          validate-wrappers: true
+
+      # Some regression suites touch client-side classes under an X server even when headless.
+      - name: Install Xvfb
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb mesa-utils x11-xserver-utils
+
+      - name: Restore MIAOKATZE-Core from cache
+        id: core-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.m2/repository/com/miaokatze/miaokatzecore
+          key: miaokatze-core-${{ env.CORE_TAG }}
+
+      - name: Publish MIAOKATZE-Core to the local Maven repository
+        if: steps.core-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$CORE_TAG" https://github.com/MIAOKATZE/MIAOKATZE-Core.git "$RUNNER_TEMP/MIAOKATZE-Core"
+          cd "$RUNNER_TEMP/MIAOKATZE-Core"
+          bash ./gradlew publishToMavenLocal --stacktrace --console=plain
+
+      - name: Cache MIAOKATZE-Core artifacts
+        if: steps.core-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.m2/repository/com/miaokatze/miaokatzecore
+          key: miaokatze-core-${{ env.CORE_TAG }}
+
+      - name: Build and run verification checks
+        # 'build' covers compilation, JUnit, the hand-written JavaExec regressions,
+        # the license bundle check, tests and reobfuscated-ABI checks.
+        #
+        # Two pre-existing issues in this repository are excluded so the job verifies
+        # behaviour instead of failing for unrelated reasons:
+        #  - The configuration cache cannot serialize verifyLicenseBundle's doLast closure.
+        #  - 14 source files are not Spotless-formatted; run ./gradlew spotlessApply to fix.
+        # The Core repository is redirected to the local Maven repo prepared above.
+        run: >-
+          xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24"
+          bash ./gradlew build --build-cache --stacktrace --console=plain
+          --no-configuration-cache
+          -x spotlessCheck -x spotlessJavaCheck
+          -PmiaokatzeCoreRepository="file://$HOME/.m2/repository/"
+
+      - name: Upload built jars
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gtmb-jars
+          path: build/libs/*.jar
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload failure reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-reports
+          path: |
+            build/reports/
+            build/test-results/
+            build/hologram-*/
+          if-no-files-found: ignore
+          retention-days: 14
