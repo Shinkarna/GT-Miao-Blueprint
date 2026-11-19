@@ -52,6 +52,7 @@ jobs:
           done
           if [ "${#paths[@]}" -gt 0 ]; then
             joined=$(IFS=,; echo "${paths[*]}")
+            mkdir -p "$HOME/.gradle"
             echo "org.gradle.java.installations.paths=$joined" >> "$HOME/.gradle/gradle.properties"
             echo "Registered toolchains: $joined"
           fi
