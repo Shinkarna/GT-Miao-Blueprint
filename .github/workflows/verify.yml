@@ -66,7 +66,12 @@ jobs:
           if [ "${#paths[@]}" -gt 0 ]; then
             joined=$(IFS=,; echo "${paths[*]}")
             mkdir -p "$HOME/.gradle"
-            echo "org.gradle.java.installations.paths=$joined" >> "$HOME/.gradle/gradle.properties"
+            {
+              echo "org.gradle.java.installations.paths=$joined"
+              # The GTNH mirrors are slow; the 30s default gives up too early.
+              echo "systemProp.org.gradle.internal.http.connectionTimeout=60000"
+              echo "systemProp.org.gradle.internal.http.socketTimeout=60000"
+            } >> "$HOME/.gradle/gradle.properties"
             echo "Registered toolchains: $joined"
           fi
 
@@ -94,7 +99,8 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch "$CORE_TAG" https://github.com/MIAOKATZE/MIAOKATZE-Core.git "$RUNNER_TEMP/MIAOKATZE-Core"
           cd "$RUNNER_TEMP/MIAOKATZE-Core"
-          bash ./gradlew publishToMavenLocal --stacktrace --console=plain
+          bash "$GITHUB_WORKSPACE/.github/scripts/gradle-retry.sh" \
+            bash ./gradlew publishToMavenLocal --stacktrace --console=plain
 
       - name: Cache MIAOKATZE-Core artifacts
         if: steps.core-cache.outputs.cache-hit != 'true'
@@ -112,12 +118,13 @@ jobs:
         #  - The configuration cache cannot serialize verifyLicenseBundle's doLast closure.
         #  - 14 source files are not Spotless-formatted; run ./gradlew spotlessApply to fix.
         # The Core repository is redirected to the local Maven repo prepared above.
-        run: >-
-          xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24"
-          bash ./gradlew build --build-cache --stacktrace --console=plain
-          --no-configuration-cache
-          -x spotlessCheck -x spotlessJavaCheck
-          -PmiaokatzeCoreRepository="file://$HOME/.m2/repository/"
+        run: |
+          bash .github/scripts/gradle-retry.sh \
+            xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" \
+            bash ./gradlew build --build-cache --stacktrace --console=plain \
+              --no-configuration-cache \
+              -x spotlessCheck -x spotlessJavaCheck \
+              -PmiaokatzeCoreRepository="file://$HOME/.m2/repository/"
 
       - name: Upload built jars
         if: success()
